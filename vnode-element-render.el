@@ -1,4 +1,4 @@
-;;; vnode-element-render.el --- 通用渲染引擎（不注册任何具体控件）  -*- lexical-binding: t; -*-
+;;; vnode-element-render.el --- 通用渲染引擎（修复对齐与 face）  -*- lexical-binding: t; -*-
 
 (require 'vnode-element)
 (require 'vnode-element-style)
@@ -10,7 +10,8 @@
 ;; ═══════════════════════════════════════════════════════════════════
 
 (defun vnode-element-render--build-face (node)
-  "根据 NODE 的视觉样式构建 Emacs face 属性 plist。"
+  "根据 NODE 的视觉样式构建 Emacs face 属性 plist。
+优先使用 :face，细粒度样式会覆盖或补充 :face 中的对应属性。"
   (let* ((face (vnode-element-style-face node))
          (color (vnode-element-style-color node))
          (weight (vnode-element-style-font-weight node))
@@ -19,19 +20,26 @@
          (family (vnode-element-style-font-family node))
          (decoration (vnode-element-style-text-decoration node))
          (extra '()))
-    (when color   (push (cons :foreground color) extra))
-    (when weight  (push (cons :weight (if (eq weight 'normal) 'normal weight)) extra))
-    (when slant   (push (cons :slant (if (eq slant 'normal) 'normal slant)) extra))
-    (when size    (push (cons :height size) extra))
-    (when family  (push (cons :family family) extra))
+    ;; 只在值有意义（非默认且非 nil）时才写入 plist
+    (when color   (setq extra (plist-put extra :foreground color)))
+    (when (and weight (not (eq weight 'normal)))
+      (setq extra (plist-put extra :weight weight)))
+    (when (and slant (not (eq slant 'normal)))
+      (setq extra (plist-put extra :slant slant)))
+    (when size    (setq extra (plist-put extra :height size)))
+    (when family  (setq extra (plist-put extra :family family)))
     (when decoration
       (dolist (d (if (listp decoration) decoration (list decoration)))
-        (cond ((eq d 'underline)    (push '(:underline t) extra))
-              ((eq d 'line-through) (push '(:strike-through t) extra))
-              ((eq d 'overline)     (push '(:overline t) extra)))))
+        (cond ((eq d 'underline)    (setq extra (plist-put extra :underline t)))
+              ((eq d 'line-through) (setq extra (plist-put extra :strike-through t)))
+              ((eq d 'overline)     (setq extra (plist-put extra :overline t))))))
+    ;; 组合 face
     (cond
-     ((null face) extra)
+     ;; 只有 face 符号，且没有任何额外属性 → 直接返回符号
+     ((and (null extra) (symbolp face)) face)
+     ;; face 是符号，但有额外属性 → (:inherit face ...)
      ((symbolp face) `(:inherit ,face ,@extra))
+     ;; face 本身已经是 plist，或为 nil
      (t (append face extra)))))
 
 ;; ═══════════════════════════════════════════════════════════════════
@@ -85,20 +93,20 @@
                   0)))
     (when (and start-pos end-pos)
       (let ((ov (make-overlay start-pos end-pos))
-            (face-props '()))
-        (when bg (push (cons :background bg) face-props))
+            (face-plist '()))
+        (when bg (setq face-plist (plist-put face-plist :background bg)))
         (when (and (> bw 0) bc)
-          (push (cons :box `(:line-width ,bw :color ,bc)) face-props)
-          (unless bg (push (cons :background nil) face-props)))
-        (when face-props
-          (overlay-put ov 'face face-props))
+          (setq face-plist (plist-put face-plist :box `(:line-width ,bw :color ,bc)))
+          (unless bg (setq face-plist (plist-put face-plist :background nil))))
+        (when face-plist
+          (overlay-put ov 'face face-plist))
         (overlay-put ov 'vnode node)))))
 
 ;; ═══════════════════════════════════════════════════════════════════
 ;; 分派函数
 ;; ═══════════════════════════════════════════════════════════════════
 
-(defun vnode-element-render--node (node)
+(cl-defun vnode-element-render--node (node)
   "根据节点类型分派渲染函数。"
   (unless (and (vnode-element-p node)
                (vnode-element-style-visible node))

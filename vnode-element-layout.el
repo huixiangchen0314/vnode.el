@@ -247,12 +247,374 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
       (list (vnode-element-end-row node) (vnode-element-end-col node)))))
 
 ;; ═══════════════════════════════════════════════════════════════════
-;; Flex 布局器（占位）
+;; Flex 布局器
 ;; ═══════════════════════════════════════════════════════════════════
 
-(defun vnode-element-layout-flex (_node _available-cols _available-rows _start-row _start-col)
-  "Flex 布局器（尚未实现）。"
-  (error "Flex layout not implemented yet"))
+(cl-defstruct (vnode-element-layout-flex--child-info
+               (:constructor vnode-element-layout-flex--child-info-create)
+               (:conc-name vnode-element-layout-flex--child-info-))
+  child base-main main-margin-total final-main final-cross)
+
+(cl-defstruct (vnode-element-layout-flex--line-info
+               (:constructor vnode-element-layout-flex--line-info-create)
+               (:conc-name vnode-element-layout-flex--line-info-))
+  child-infos cross-size cross-pos)
+
+(defun vnode-element-layout-flex (container available-cols available-rows start-row start-col)
+  "Flex 格式化上下文。"
+  ;; 1. 仅应用宽度，高度暂保留 0（后续由内容决定）
+  (let* ((w (vnode-element-style-width container))
+         (min-w (or (vnode-element-style-min-width container) 0))
+         (max-w (or (vnode-element-style-max-width container) most-positive-fixnum))
+         (final-w (if (vnode-element--auto-p w) available-cols w))
+         (final-w (max min-w (min final-w max-w))))
+    (vnode-element--set-resolved! container :width final-w)
+    (vnode-element--set-resolved! container :height 0)
+    (setf (vnode-element-start-row container) start-row
+          (vnode-element-start-col container) start-col
+          (vnode-element-end-row container) start-row
+          (vnode-element-end-col container) (+ start-col final-w)))
+  ;; 2. 计算内容区域
+  (cl-destructuring-bind (content-x content-y content-width content-height)
+      (vnode-element-layout--content-rect container)
+    (when (< content-height 0) (setq content-height 0))
+    (let* ((direction (vnode-element-style-flex-direction container))
+           (is-row (or (eq direction 'row) (eq direction 'row-reverse)))
+           (is-reverse (or (eq direction 'row-reverse) (eq direction 'column-reverse)))
+           (wrap (vnode-element-style-flex-wrap container))
+           (gap (vnode-element-style-gap container))
+           (main-content-size (if is-row content-width content-height))
+           (cross-content-size (if is-row content-height content-width))
+           (main-start (if is-row content-x content-y))
+           (cross-start (if is-row content-y content-x))
+           (normal-children (cl-remove-if-not
+                             (lambda (c) (and (vnode-element-p c)
+                                              (not (eq (vnode-element-style-display c) 'none))
+                                              (not (eq (vnode-element-style-position c) 'absolute))))
+                             (vnode-element-children container)))
+           (total-main-size 0)
+           (max-cross-occupied 0))
+      (dolist (child normal-children)
+        (setf (vnode-element-parent child) container))
+      (when normal-children
+        (if (eq wrap 'nowrap)
+            (cl-destructuring-bind (line-main line-cross _)
+                (vnode-element-layout-flex--layout-line
+                 container normal-children is-row is-reverse
+                 main-content-size cross-content-size main-start cross-start gap)
+              (setq total-main-size line-main)
+              (setq max-cross-occupied line-cross))
+          (cl-destructuring-bind (tm mc)
+              (vnode-element-layout-flex--layout-multiline
+               container normal-children is-row is-reverse
+               main-content-size cross-content-size main-start cross-start gap)
+            (setq total-main-size tm)
+            (setq max-cross-occupied mc))))
+      ;; 绝对定位
+      (vnode-element-layout--absolute-children container available-cols available-rows)
+      ;; 调整容器尺寸
+      (vnode-element-layout-flex--adjust-container-size
+       container total-main-size max-cross-occupied is-row)
+      ;; 返回结束坐标
+      (list (vnode-element-end-row container) (vnode-element-end-col container)))))
+
+(defun vnode-element-layout-flex--layout-line (container children is-row _is-reverse
+                                                main-content-size cross-content-size
+                                                main-start cross-start gap)
+  "布局一行 Flex 子元素，返回 (line-main-size line-cross-size child-infos)。"
+  (let* ((child-infos (vnode-element-layout-flex--measure-main-axis children is-row main-content-size gap))
+         (total-flex-grow (apply #'+ (mapcar (lambda (ci)
+                                               (or (vnode-element-style-flex-grow (vnode-element-layout-flex--child-info-child ci)) 0))
+                                             child-infos)))
+         (total-base-main (apply #'+ (mapcar (lambda (ci) (+ (vnode-element-layout-flex--child-info-base-main ci)
+                                                              (vnode-element-layout-flex--child-info-main-margin-total ci)))
+                                           child-infos)))
+         (remaining-space (- main-content-size total-base-main (* gap (1- (length children))))))
+    (vnode-element-layout-flex--distribute-free-space child-infos total-flex-grow remaining-space is-row)
+    (let* ((align-items (vnode-element-style-align-items container))
+           (line-cross-size (vnode-element-layout-flex--measure-cross-axis child-infos is-row cross-content-size align-items))
+           (justify (vnode-element-layout-flex--compute-main-justify container children child-infos gap main-content-size main-start))
+           (main-offset (nth 0 justify))
+           (space-between (nth 1 justify)))
+      (vnode-element-layout-flex--place-children child-infos is-row main-offset space-between cross-start)
+      (vnode-element-layout-flex--align-cross-items child-infos is-row cross-start line-cross-size align-items)
+      (let ((line-main-size (+ (apply #'+ (mapcar (lambda (ci) (+ (vnode-element-layout-flex--child-info-final-main ci)
+                                                                   (vnode-element-layout-flex--child-info-main-margin-total ci)))
+                                                 child-infos))
+                               (* gap (1- (length children))))))
+        (list line-main-size line-cross-size child-infos)))))
+
+(defun vnode-element-layout-flex--layout-multiline (container children is-row _is-reverse
+                                                     main-content-size cross-content-size
+                                                     main-start cross-start gap)
+  "多行 Flex 布局，返回 (total-main-size max-cross-occupied)。"
+  (let* ((lines (vnode-element-layout-flex--collect-lines children is-row main-content-size cross-content-size gap))
+         (is-wrap-reverse (eq (vnode-element-style-flex-wrap container) 'wrap-reverse))
+         (line-infos '()))
+    (when is-wrap-reverse (setq lines (nreverse lines)))
+    (dolist (line lines)
+      (cl-destructuring-bind (_line-main line-cross child-infos)
+          (vnode-element-layout-flex--layout-line container line is-row nil
+                                                   main-content-size cross-content-size
+                                                   main-start cross-start gap)
+        (push (vnode-element-layout-flex--line-info-create :child-infos child-infos :cross-size line-cross)
+              line-infos)))
+    (setq line-infos (nreverse line-infos))
+    (vnode-element-layout-flex--apply-align-content container line-infos cross-content-size gap)
+    (let ((current-cross (if is-wrap-reverse (+ cross-start cross-content-size) cross-start))
+          (extra-gap (or (plist-get (vnode-element-props container) :align-content-extra-gap) 0))
+          (block-offset (or (plist-get (vnode-element-props container) :align-content-block-offset) 0)))
+      (if is-wrap-reverse
+          (setq current-cross (- current-cross block-offset))
+        (setq current-cross (+ current-cross block-offset)))
+      (dolist (line-info line-infos)
+        (let* ((line-cross-pos (if is-wrap-reverse
+                                   (- current-cross (vnode-element-layout-flex--line-info-cross-size line-info))
+                                 current-cross))
+               (line-cross-size (vnode-element-layout-flex--line-info-cross-size line-info)))
+          (setf (vnode-element-layout-flex--line-info-cross-pos line-info) line-cross-pos)
+          (dolist (info (vnode-element-layout-flex--line-info-child-infos line-info))
+            (let ((child (vnode-element-layout-flex--child-info-child info)))
+              (when (vnode-element-layout-flex--should-stretch child (vnode-element-style-align-items container))
+                (let* ((margin-start (vnode-element-get-margin child is-row t t))
+                       (margin-end (- (vnode-element-get-margin child is-row t) margin-start))
+                       (new-cross (- line-cross-size margin-start margin-end)))
+                  (setf (vnode-element-layout-flex--child-info-final-cross info)
+                        (vnode-element-clamp-cross-size child new-cross is-row))
+                  (if is-row
+                      (setf (vnode-element-end-row child) (+ (vnode-element-start-row child) new-cross))
+                    (setf (vnode-element-end-col child) (+ (vnode-element-start-col child) new-cross)))))
+              (vnode-element-layout-flex--align-cross-item child is-row line-cross-pos line-cross-size
+                                                           (vnode-element-style-align-items container)))))
+          (if is-wrap-reverse
+              (setq current-cross (- line-cross-pos gap extra-gap))
+            (setq current-cross (+ line-cross-pos line-cross-size gap extra-gap))))))
+    ;; 计算总占用（循环外）
+    (let ((min-pos (apply #'min (mapcar #'vnode-element-layout-flex--line-info-cross-pos line-infos)))
+          (max-pos (apply #'max (mapcar (lambda (li) (+ (vnode-element-layout-flex--line-info-cross-pos li)
+                                                        (vnode-element-layout-flex--line-info-cross-size li)))
+                                        line-infos))))
+      (list main-content-size (- max-pos cross-start))))
+
+;; ── 辅助函数 ──
+
+(defun vnode-element-layout-flex--measure-main-axis (children is-row main-content-size gap)
+  (let ((infos '()))
+    (dolist (child children)
+      (let* ((base-main (vnode-element-layout-flex--get-base-main child is-row main-content-size))
+             (clamped (vnode-element-clamp-main-size child base-main is-row))
+             (margin-start (vnode-element-get-margin child is-row nil t))
+             (margin-end (- (vnode-element-get-margin child is-row nil) margin-start))
+             (margin-total (+ margin-start margin-end)))
+        (push (vnode-element-layout-flex--child-info-create
+               :child child :base-main clamped :main-margin-total margin-total)
+              infos)))
+    (nreverse infos)))
+
+(defun vnode-element-layout-flex--get-base-main (child is-row available-cross)
+  (let ((basis (vnode-element-style-flex-basis child)))
+    (cond ((and (not (vnode-element--auto-p basis)) basis) basis)
+          (t (if is-row
+                 (vnode-element-get-child-width child available-cross)
+               (vnode-element-get-child-height child available-cross))))))
+
+(defun vnode-element-layout-flex--distribute-free-space (child-infos total-flex-grow remaining-space is-row)
+  (when (and (> total-flex-grow 0) (> remaining-space 0))
+    (let ((space-left remaining-space))
+      (dolist (info child-infos)
+        (let* ((child (vnode-element-layout-flex--child-info-child info))
+               (grow (or (vnode-element-style-flex-grow child) 0))
+               (extra (if (> total-flex-grow 0) (round (* grow (/ (float space-left) total-flex-grow))) 0)))
+          (setf (vnode-element-layout-flex--child-info-final-main info)
+                (+ (vnode-element-layout-flex--child-info-base-main info) extra))
+          (setf (vnode-element-layout-flex--child-info-final-main info)
+                (max (vnode-element-layout-flex--child-info-final-main info)
+                     (if is-row (or (vnode-element-style-min-width child) 0)
+                       (or (vnode-element-style-min-height child) 0))))))))
+  (dolist (info child-infos)
+    (unless (vnode-element-layout-flex--child-info-final-main info)
+      (setf (vnode-element-layout-flex--child-info-final-main info)
+            (vnode-element-layout-flex--child-info-base-main info)))))
+
+(defun vnode-element-layout-flex--measure-cross-axis (child-infos is-row cross-content-size parent-align)
+  (let ((max-occupied 0))
+    (dolist (info child-infos)
+      (let* ((child (vnode-element-layout-flex--child-info-child info))
+             (cross-size
+              (if (vnode-element-layout-flex--should-stretch child parent-align)
+                  (- cross-content-size (vnode-element-get-margin child is-row t))
+                (vnode-element-layout-flex--get-base-cross child is-row
+                 (vnode-element-layout-flex--child-info-final-main info))))
+             (clamped (vnode-element-clamp-cross-size child cross-size is-row)))
+        (setf (vnode-element-layout-flex--child-info-final-cross info) clamped)
+        (let ((occupied (+ clamped (vnode-element-get-margin child is-row t))))
+          (when (> occupied max-occupied) (setq max-occupied occupied)))))
+    max-occupied))
+
+(defun vnode-element-layout-flex--get-base-cross (child is-row main-size)
+  (if is-row
+      (vnode-element-get-child-height child main-size)
+    (vnode-element-get-child-width child main-size)))
+
+(defun vnode-element-layout-flex--should-stretch (child parent-align)
+  (let ((self (vnode-element-style-align-self child)))
+    (or (eq self 'stretch)
+        (and (eq self 'auto) (eq parent-align 'stretch)))))
+
+(defun vnode-element-layout-flex--compute-main-justify (container children child-infos gap main-content-size main-start)
+  (let* ((total-final (apply #'+ (mapcar (lambda (ci) (+ (vnode-element-layout-flex--child-info-final-main ci)
+                                                          (vnode-element-layout-flex--child-info-main-margin-total ci)))
+                                         child-infos)))
+         (free-space (- main-content-size total-final (* gap (1- (length children)))))
+         (justify (vnode-element-style-justify-content container))
+         (main-offset main-start)
+         (space-between gap))
+    (cond
+     ((eq justify 'flex-end) (setq main-offset (+ main-start free-space)))
+     ((eq justify 'center) (setq main-offset (+ main-start (floor free-space 2))))
+     ((eq justify 'space-between)
+      (when (> (length children) 1)
+        (setq space-between (+ gap (floor free-space (1- (length children)))))))
+     ((eq justify 'space-around)
+      (let ((half (floor free-space (length children))))
+        (setq main-offset (+ main-start (floor half 2)))
+        (setq space-between (+ gap half)))))
+    (list main-offset space-between)))
+
+(defun vnode-element-layout-flex--place-children (child-infos is-row main-offset space-between cross-start)
+  (let ((current-main main-offset))
+    (dolist (info child-infos)
+      (let* ((child (vnode-element-layout-flex--child-info-child info))
+             (margin-start (vnode-element-get-margin child is-row nil t))
+             (margin-end (- (vnode-element-get-margin child is-row nil) margin-start))
+             (final-main (vnode-element-layout-flex--child-info-final-main info))
+             (final-cross (vnode-element-layout-flex--child-info-final-cross info))
+             (child-main-pos (+ current-main margin-start))
+             (child-cross-pos (+ cross-start (vnode-element-get-margin child is-row t t)))
+             (start-row (if is-row child-cross-pos child-main-pos))
+             (start-col (if is-row child-main-pos child-cross-pos))
+             (width (if is-row final-main final-cross))
+             (height (if is-row final-cross final-main)))
+        (vnode-element-layout child width height start-row start-col)
+        (setq current-main (+ current-main final-main margin-end space-between))))))
+
+(defun vnode-element-layout-flex--align-cross-item (child is-row line-cross-pos line-cross-size parent-align)
+  (let* ((self (vnode-element-style-align-self child))
+         (effective (cond ((eq self 'flex-start) 'start)
+                          ((eq self 'flex-end) 'end)
+                          ((eq self 'center) 'center)
+                          ((eq self 'stretch) 'stretch)
+                          (t parent-align)))
+         (margin-start (vnode-element-get-margin child is-row t t))
+         (margin-end (- (vnode-element-get-margin child is-row t) margin-start))
+         (child-size (if is-row (- (vnode-element-end-row child) (vnode-element-start-row child))
+                       (- (vnode-element-end-col child) (vnode-element-start-col child)))))
+    (unless (eq effective 'stretch)
+      (let ((new-pos
+             (cond
+              ((eq effective 'start) line-cross-pos)
+              ((eq effective 'end) (+ line-cross-pos line-cross-size (- child-size) (- margin-end)))
+              ((eq effective 'center) (+ line-cross-pos margin-start
+                                         (floor (- line-cross-size margin-start margin-end child-size) 2)))
+              (t line-cross-pos))))
+        (if is-row
+            (setf (vnode-element-start-row child) new-pos
+                  (vnode-element-end-row child) (+ new-pos child-size))
+          (setf (vnode-element-start-col child) new-pos
+                (vnode-element-end-col child) (+ new-pos child-size)))))))
+
+(defun vnode-element-layout-flex--align-cross-items (child-infos is-row cross-start line-cross-size parent-align)
+  (dolist (info child-infos)
+    (vnode-element-layout-flex--align-cross-item (vnode-element-layout-flex--child-info-child info)
+                                                 is-row cross-start line-cross-size parent-align)))
+
+(defun vnode-element-layout-flex--collect-lines (children is-row main-content-size cross-content-size gap)
+  (let ((lines '()) (current-line '()) (current-main-size 0))
+    (dolist (child children)
+      (let* ((base-main (vnode-element-layout-flex--get-base-main child is-row cross-content-size))
+             (clamped (vnode-element-clamp-main-size child base-main is-row))
+             (margin (vnode-element-get-margin child is-row nil))
+             (child-size (+ clamped margin)))
+        (when (and current-line (> (+ current-main-size child-size (if current-line gap 0)) main-content-size))
+          (push (nreverse current-line) lines)
+          (setq current-line nil)
+          (setq current-main-size 0))
+        (push child current-line)
+        (setq current-main-size (+ current-main-size child-size (if (cdr current-line) gap 0)))))
+    (when current-line (push (nreverse current-line) lines))
+    (nreverse lines)))
+
+(defun vnode-element-layout-flex--apply-align-content (container line-infos cross-content-size gap)
+  (let* ((sum-cross (apply #'+ (mapcar #'vnode-element-layout-flex--line-info-cross-size line-infos)))
+         (total-gaps (* gap (1- (length line-infos))))
+         (free-cross (- cross-content-size sum-cross total-gaps))
+         (align (vnode-element-style-align-content container))
+         (extra-gap 0)
+         (block-offset 0))
+    (when (> (length line-infos) 0)
+      (cond
+       ((eq align 'stretch)
+        (when (> free-cross 0)
+          (let ((add-each (floor free-cross (length line-infos))))
+            (dolist (li line-infos)
+              (cl-incf (vnode-element-layout-flex--line-info-cross-size li) add-each)))))
+       ((eq align 'space-between)
+        (when (> (length line-infos) 1)
+          (setq extra-gap (floor free-cross (1- (length line-infos))))))
+       ((eq align 'space-around)
+        (setq extra-gap (floor free-cross (length line-infos)))
+        (setq block-offset (floor extra-gap 2)))
+       ((eq align 'center) (setq block-offset (floor free-cross 2)))
+       ((eq align 'flex-end) (setq block-offset free-cross))))
+    (setf (vnode-element-props container) (plist-put (vnode-element-props container) :align-content-extra-gap extra-gap))
+    (setf (vnode-element-props container) (plist-put (vnode-element-props container) :align-content-block-offset block-offset))))
+
+(defun vnode-element-layout-flex--adjust-container-size (container total-main-size max-cross-occupied is-row)
+  "调整容器主轴和交叉轴尺寸（若 auto）。"
+  ;; 主轴方向
+  (if is-row
+      (when (vnode-element--auto-p (vnode-element-style-width container))
+        (let* ((pad-left (vnode-element-style-padding container :left))
+               (pad-right (vnode-element-style-padding container :right))
+               (bor-left (vnode-element-style-border-width container :left))
+               (bor-right (vnode-element-style-border-width container :right))
+               (new-w (+ total-main-size pad-left pad-right bor-left bor-right))
+               (new-w (max (or (vnode-element-style-min-width container) 0)
+                           (min new-w (or (vnode-element-style-max-width container) most-positive-fixnum)))))
+          (setf (vnode-element-end-col container) (+ (vnode-element-start-col container) new-w))
+          (vnode-element--set-resolved! container :width new-w)))
+    (when (vnode-element--auto-p (vnode-element-style-height container))
+      (let* ((pad-top (vnode-element-style-padding container :top))
+             (pad-bottom (vnode-element-style-padding container :bottom))
+             (bor-top (vnode-element-style-border-width container :top))
+             (bor-bottom (vnode-element-style-border-width container :bottom))
+             (new-h (+ total-main-size pad-top pad-bottom bor-top bor-bottom))
+             (new-h (max (or (vnode-element-style-min-height container) 0)
+                         (min new-h (or (vnode-element-style-max-height container) most-positive-fixnum)))))
+        (setf (vnode-element-end-row container) (+ (vnode-element-start-row container) new-h))
+        (vnode-element--set-resolved! container :height new-h))))
+  ;; 交叉轴方向
+  (if is-row
+      (when (vnode-element--auto-p (vnode-element-style-height container))
+        (let* ((pad-top (vnode-element-style-padding container :top))
+               (pad-bottom (vnode-element-style-padding container :bottom))
+               (bor-top (vnode-element-style-border-width container :top))
+               (bor-bottom (vnode-element-style-border-width container :bottom))
+               (new-h (+ max-cross-occupied pad-top pad-bottom bor-top bor-bottom))
+               (new-h (max (or (vnode-element-style-min-height container) 0)
+                           (min new-h (or (vnode-element-style-max-height container) most-positive-fixnum)))))
+          (setf (vnode-element-end-row container) (+ (vnode-element-start-row container) new-h))
+          (vnode-element--set-resolved! container :height new-h)))
+    (when (vnode-element--auto-p (vnode-element-style-width container))
+      (let* ((pad-left (vnode-element-style-padding container :left))
+             (pad-right (vnode-element-style-padding container :right))
+             (bor-left (vnode-element-style-border-width container :left))
+             (bor-right (vnode-element-style-border-width container :right))
+             (new-w (+ max-cross-occupied pad-left pad-right bor-left bor-right))
+             (new-w (max (or (vnode-element-style-min-width container) 0)
+                         (min new-w (or (vnode-element-style-max-width container) most-positive-fixnum)))))
+        (setf (vnode-element-end-col container) (+ (vnode-element-start-col container) new-w))
+        (vnode-element--set-resolved! container :width new-w)))))
 
 ;; ═══════════════════════════════════════════════════════════════════
 ;; 主入口：根据注册表或 display 分派
@@ -266,7 +628,6 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
   (let ((registered (vnode-element--find-layout (vnode-element-type node))))
     (if registered
         (funcall registered node available-cols available-rows start-row start-col)
-      ;; 未注册 → 容器节点，按 display 分派
       (let ((display (vnode-element-style-display node)))
         (cl-case display
           ((block)   (vnode-element-layout-block node available-cols available-rows start-row start-col))

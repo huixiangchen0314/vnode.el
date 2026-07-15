@@ -7,6 +7,9 @@ SRC_FILES = \
 	vnode-element-style.el \
 	vnode-element-measure.el \
 	vnode-element-layout.el \
+	vnode-element-registry.el \
+	vnode-element-render.el \
+	vnode-element-controls.el \
 #	vnode-vnode.el \
 #	vnode-diff.el \
 #	vnode.el
@@ -16,6 +19,8 @@ TEST_FILES = \
 	tests/vnode-element-style-tests.el \
 	tests/vnode-element-measure-tests.el \
 	tests/vnode-element-layout-tests.el \
+	tests/vnode-element-render-tests.el \
+	tests/vnode-element-layout-flex-tests.el \
 #	tests/vnode-vnode-tests.el \
 #	tests/vnode-diff-tests.el
 

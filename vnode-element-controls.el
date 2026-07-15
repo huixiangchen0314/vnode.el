@@ -40,19 +40,28 @@
          (start-col (vnode-element-start-col node))
          (end-col (vnode-element-end-col node))
          (avail-width (- end-col start-col))
-         (align (vnode-element-style-text-align node))
+         (align (if (> (length lines) 1) 'left   ; 多行强制左对齐
+                  (vnode-element-style-text-align node)))
          (face (vnode-element-render--build-face node)))
     (cl-loop for line in lines
              for row from start-row
              do (let* ((line-width (string-width line))
-                       (left-pad 0))
+                       (left-pad 0)
+                       (right-pad 0))
                   (when (> avail-width line-width)
                     (cond
                      ((eq align 'center)
-                      (setq left-pad (floor (- avail-width line-width) 2)))
+                      (setq left-pad (floor (- avail-width line-width) 2))
+                      (setq right-pad (- avail-width line-width left-pad)))
                      ((eq align 'right)
-                      (setq left-pad (- avail-width line-width)))))
-                  (let ((padded-line (concat (make-string left-pad ?\s) line)))
+                      (setq left-pad (- avail-width line-width)))
+                     (t                               ; left
+                      ;; 单行时右侧填充至全宽
+                      (when (<= (length lines) 1)
+                        (setq right-pad (- avail-width line-width))))))
+                  (let ((padded-line (concat (make-string left-pad ?\s)
+                                             line
+                                             (make-string right-pad ?\s))))
                     (vnode-element-render--insert-at row start-col padded-line face))))))
 
 ;; ═══════════════════════════════════════════════════════════════════
