@@ -1,4 +1,0 @@
-
-
-
-(provide vnode-diff.el)
