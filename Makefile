@@ -34,6 +34,7 @@ compile: $(SRC_FILES:.el=.elc) $(TEST_FILES:.el=.elc)
 # 运行测试（先编译再测试，保证用的是最新代码）
 test: compile
 	$(EMACS) -Q --batch $(LOAD_PATH) $(TEST_LOAD) \
+		-l vnode-element-controls \
 		-f ert-run-tests-batch-and-exit
 
 clean:
