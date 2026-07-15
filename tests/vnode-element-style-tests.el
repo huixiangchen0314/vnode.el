@@ -110,18 +110,18 @@
     (should (= (vnode-element-style-padding node :left) 2))))
 
 (ert-deftest test-style-border-uniform ()
-  (let ((node (make-test-node :border 1)))
-    (should (= (vnode-element-style-border node :top) 1))
-    (should (= (vnode-element-style-border node :bottom) 1))))
+  (let ((node (make-test-node :border-width 1)))
+    (should (= (vnode-element-style-border-width node :top) 1))
+    (should (= (vnode-element-style-border-width node :bottom) 1))))
 
 (ert-deftest test-style-border-plist ()
-  (let ((node (make-test-node :border '(:top 2 :right 0 :bottom 2 :left 0))))
-    (should (= (vnode-element-style-border node :top) 2))
-    (should (= (vnode-element-style-border node :right) 0))))
+  (let ((node (make-test-node :border-width '(:top 2 :right 0 :bottom 2 :left 0))))
+    (should (= (vnode-element-style-border-width node :top) 2))
+    (should (= (vnode-element-style-border-width node :right) 0))))
 
 (ert-deftest test-style-border-default ()
   (let ((node (make-test-node)))
-    (should (= (vnode-element-style-border node :left) 0))))
+    (should (= (vnode-element-style-border-width node :left) 0))))
 
 ;; ═══════════════════════════════════════════════════════
 ;; Flex 容器属性

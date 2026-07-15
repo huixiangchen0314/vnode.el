@@ -79,13 +79,13 @@
   (vnode-element--auto-p (vnode-element-style-padding node :left)))
 
 (defun vnode-element-is-auto-border-top-p (node)
-  (vnode-element--auto-p (vnode-element-style-border node :top)))
+  (vnode-element--auto-p (vnode-element-style-border-width node :top)))
 (defun vnode-element-is-auto-border-right-p (node)
-  (vnode-element--auto-p (vnode-element-style-border node :right)))
+  (vnode-element--auto-p (vnode-element-style-border-width node :right)))
 (defun vnode-element-is-auto-border-bottom-p (node)
-  (vnode-element--auto-p (vnode-element-style-border node :bottom)))
+  (vnode-element--auto-p (vnode-element-style-border-width node :bottom)))
 (defun vnode-element-is-auto-border-left-p (node)
-  (vnode-element--auto-p (vnode-element-style-border node :left)))
+  (vnode-element--auto-p (vnode-element-style-border-width node :left)))
 
 (defun vnode-element-is-auto-top-p (node)
   (vnode-element--auto-p (vnode-element-style-top node)))
@@ -214,8 +214,8 @@ START-ONLY 非 nil 则只返回起始一侧的 margin。"
               (- height
                  (vnode-element-style-padding container :top)
                  (vnode-element-style-padding container :bottom)
-                 (vnode-element-style-border container :top)
-                 (vnode-element-style-border container :bottom)))
+                 (vnode-element-style-border-width container :top)
+                 (vnode-element-style-border-width container :bottom)))
              (measured
               (vnode-element-measure-content-along-axis
                container content-height
@@ -225,8 +225,8 @@ START-ONLY 非 nil 则只返回起始一侧的 margin。"
                accumulate
                (vnode-element-style-padding container :left)
                (vnode-element-style-padding container :right)
-               (vnode-element-style-border container :left)
-               (vnode-element-style-border container :right)))
+               (vnode-element-style-border-width container :left)
+               (vnode-element-style-border-width container :right)))
              (clamped
               (let ((min (or (vnode-element-style-min-width container) 0))
                     (max (or (vnode-element-style-max-width container) most-positive-fixnum)))
@@ -254,8 +254,8 @@ START-ONLY 非 nil 则只返回起始一侧的 margin。"
               (- width
                  (vnode-element-style-padding container :left)
                  (vnode-element-style-padding container :right)
-                 (vnode-element-style-border container :left)
-                 (vnode-element-style-border container :right)))
+                 (vnode-element-style-border-width container :left)
+                 (vnode-element-style-border-width container :right)))
              (measured
               (vnode-element-measure-content-along-axis
                container content-width
@@ -265,8 +265,8 @@ START-ONLY 非 nil 则只返回起始一侧的 margin。"
                accumulate
                (vnode-element-style-padding container :top)
                (vnode-element-style-padding container :bottom)
-               (vnode-element-style-border container :top)
-               (vnode-element-style-border container :bottom)))
+               (vnode-element-style-border-width container :top)
+               (vnode-element-style-border-width container :bottom)))
              (clamped
               (let ((min (or (vnode-element-style-min-height container) 0))
                     (max (or (vnode-element-style-max-height container) most-positive-fixnum)))
