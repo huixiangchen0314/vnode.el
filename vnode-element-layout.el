@@ -247,7 +247,7 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
       (list (vnode-element-end-row node) (vnode-element-end-col node)))))
 
 ;; ═══════════════════════════════════════════════════════════════════
-;; Flex 布局器
+;; Flex 布局器（最终修正版）
 ;; ═══════════════════════════════════════════════════════════════════
 
 (cl-defstruct (vnode-element-layout-flex--child-info
@@ -262,22 +262,11 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
 
 (defun vnode-element-layout-flex (container available-cols available-rows start-row start-col)
   "Flex 格式化上下文。"
-  ;; 1. 仅应用宽度，高度暂保留 0（后续由内容决定）
-  (let* ((w (vnode-element-style-width container))
-         (min-w (or (vnode-element-style-min-width container) 0))
-         (max-w (or (vnode-element-style-max-width container) most-positive-fixnum))
-         (final-w (if (vnode-element--auto-p w) available-cols w))
-         (final-w (max min-w (min final-w max-w))))
-    (vnode-element--set-resolved! container :width final-w)
-    (vnode-element--set-resolved! container :height 0)
-    (setf (vnode-element-start-row container) start-row
-          (vnode-element-start-col container) start-col
-          (vnode-element-end-row container) start-row
-          (vnode-element-end-col container) (+ start-col final-w)))
+  ;; 1. 应用容器尺寸（与 C# ApplyContainerSize 一致）
+  (vnode-element-layout--apply-container-size container available-cols available-rows start-row start-col)
   ;; 2. 计算内容区域
   (cl-destructuring-bind (content-x content-y content-width content-height)
       (vnode-element-layout--content-rect container)
-    (when (< content-height 0) (setq content-height 0))
     (let* ((direction (vnode-element-style-flex-direction container))
            (is-row (or (eq direction 'row) (eq direction 'row-reverse)))
            (is-reverse (or (eq direction 'row-reverse) (eq direction 'column-reverse)))
@@ -312,7 +301,7 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
             (setq max-cross-occupied mc))))
       ;; 绝对定位
       (vnode-element-layout--absolute-children container available-cols available-rows)
-      ;; 调整容器尺寸
+      ;; 调整容器尺寸（auto 时由内容决定）
       (vnode-element-layout-flex--adjust-container-size
        container total-main-size max-cross-occupied is-row)
       ;; 返回结束坐标
@@ -321,7 +310,7 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
 (defun vnode-element-layout-flex--layout-line (container children is-row _is-reverse
                                                 main-content-size cross-content-size
                                                 main-start cross-start gap)
-  "布局一行 Flex 子元素，返回 (line-main-size line-cross-size child-infos)。"
+  "布局一行 Flex 子元素，返回 (line-main-size line-cross-occupied child-infos)。"
   (let* ((child-infos (vnode-element-layout-flex--measure-main-axis children is-row main-content-size gap))
          (total-flex-grow (apply #'+ (mapcar (lambda (ci)
                                                (or (vnode-element-style-flex-grow (vnode-element-layout-flex--child-info-child ci)) 0))
@@ -332,17 +321,19 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
          (remaining-space (- main-content-size total-base-main (* gap (1- (length children))))))
     (vnode-element-layout-flex--distribute-free-space child-infos total-flex-grow remaining-space is-row)
     (let* ((align-items (vnode-element-style-align-items container))
-           (line-cross-size (vnode-element-layout-flex--measure-cross-axis child-infos is-row cross-content-size align-items))
+           (line-cross-occupied (vnode-element-layout-flex--measure-cross-axis child-infos is-row cross-content-size align-items))
            (justify (vnode-element-layout-flex--compute-main-justify container children child-infos gap main-content-size main-start))
            (main-offset (nth 0 justify))
            (space-between (nth 1 justify)))
       (vnode-element-layout-flex--place-children child-infos is-row main-offset space-between cross-start)
-      (vnode-element-layout-flex--align-cross-items child-infos is-row cross-start line-cross-size align-items)
+      ;; 交叉轴对齐应使用容器的交叉轴内容尺寸
+      (vnode-element-layout-flex--align-cross-items child-infos is-row cross-start cross-content-size align-items)
       (let ((line-main-size (+ (apply #'+ (mapcar (lambda (ci) (+ (vnode-element-layout-flex--child-info-final-main ci)
                                                                    (vnode-element-layout-flex--child-info-main-margin-total ci)))
                                                  child-infos))
                                (* gap (1- (length children))))))
-        (list line-main-size line-cross-size child-infos)))))
+        (list line-main-size line-cross-occupied child-infos)))))
+
 
 (defun vnode-element-layout-flex--layout-multiline (container children is-row _is-reverse
                                                      main-content-size cross-content-size
@@ -363,7 +354,8 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
     (vnode-element-layout-flex--apply-align-content container line-infos cross-content-size gap)
     (let ((current-cross (if is-wrap-reverse (+ cross-start cross-content-size) cross-start))
           (extra-gap (or (plist-get (vnode-element-props container) :align-content-extra-gap) 0))
-          (block-offset (or (plist-get (vnode-element-props container) :align-content-block-offset) 0)))
+          (block-offset (or (plist-get (vnode-element-props container) :align-content-block-offset) 0))
+          (max-cross 0))
       (if is-wrap-reverse
           (setq current-cross (- current-cross block-offset))
         (setq current-cross (+ current-cross block-offset)))
@@ -373,6 +365,7 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
                                  current-cross))
                (line-cross-size (vnode-element-layout-flex--line-info-cross-size line-info)))
           (setf (vnode-element-layout-flex--line-info-cross-pos line-info) line-cross-pos)
+          ;; 行内 stretch 和对齐
           (dolist (info (vnode-element-layout-flex--line-info-child-infos line-info))
             (let ((child (vnode-element-layout-flex--child-info-child info)))
               (when (vnode-element-layout-flex--should-stretch child (vnode-element-style-align-items container))
@@ -385,20 +378,18 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
                       (setf (vnode-element-end-row child) (+ (vnode-element-start-row child) new-cross))
                     (setf (vnode-element-end-col child) (+ (vnode-element-start-col child) new-cross)))))
               (vnode-element-layout-flex--align-cross-item child is-row line-cross-pos line-cross-size
-                                                           (vnode-element-style-align-items container)))))
+                                                           (vnode-element-style-align-items container))))
+          (let ((bottom (+ line-cross-pos line-cross-size)))
+            (when (> bottom max-cross) (setq max-cross bottom)))
           (if is-wrap-reverse
               (setq current-cross (- line-cross-pos gap extra-gap))
-            (setq current-cross (+ line-cross-pos line-cross-size gap extra-gap))))))
-    ;; 计算总占用（循环外）
-    (let ((min-pos (apply #'min (mapcar #'vnode-element-layout-flex--line-info-cross-pos line-infos)))
-          (max-pos (apply #'max (mapcar (lambda (li) (+ (vnode-element-layout-flex--line-info-cross-pos li)
-                                                        (vnode-element-layout-flex--line-info-cross-size li)))
-                                        line-infos))))
-      (list main-content-size (- max-pos cross-start))))
+            (setq current-cross (+ line-cross-pos line-cross-size gap extra-gap)))))
+      (list main-content-size (- max-cross cross-start)))))
+
 
 ;; ── 辅助函数 ──
 
-(defun vnode-element-layout-flex--measure-main-axis (children is-row main-content-size gap)
+(defun vnode-element-layout-flex--measure-main-axis (children is-row main-content-size _gap)
   (let ((infos '()))
     (dolist (child children)
       (let* ((base-main (vnode-element-layout-flex--get-base-main child is-row main-content-size))
@@ -461,11 +452,11 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
     (or (eq self 'stretch)
         (and (eq self 'auto) (eq parent-align 'stretch)))))
 
-(defun vnode-element-layout-flex--compute-main-justify (container children child-infos gap main-content-size main-start)
+(defun vnode-element-layout-flex--compute-main-justify (container _children child-infos gap main-content-size main-start)
   (let* ((total-final (apply #'+ (mapcar (lambda (ci) (+ (vnode-element-layout-flex--child-info-final-main ci)
                                                           (vnode-element-layout-flex--child-info-main-margin-total ci)))
                                          child-infos)))
-         (free-space (- main-content-size total-final (* gap (1- (length children)))))
+         (free-space (- main-content-size total-final (* gap (1- (length _children)))))
          (justify (vnode-element-style-justify-content container))
          (main-offset main-start)
          (space-between gap))
@@ -473,10 +464,10 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
      ((eq justify 'flex-end) (setq main-offset (+ main-start free-space)))
      ((eq justify 'center) (setq main-offset (+ main-start (floor free-space 2))))
      ((eq justify 'space-between)
-      (when (> (length children) 1)
-        (setq space-between (+ gap (floor free-space (1- (length children)))))))
+      (when (> (length _children) 1)
+        (setq space-between (+ gap (floor free-space (1- (length _children)))))))
      ((eq justify 'space-around)
-      (let ((half (floor free-space (length children))))
+      (let ((half (floor free-space (length _children))))
         (setq main-offset (+ main-start (floor half 2)))
         (setq space-between (+ gap half)))))
     (list main-offset space-between)))
@@ -570,7 +561,7 @@ AVAILABLE-COLS 和 AVAILABLE-ROWS 是容器可用列数和行数。
     (setf (vnode-element-props container) (plist-put (vnode-element-props container) :align-content-block-offset block-offset))))
 
 (defun vnode-element-layout-flex--adjust-container-size (container total-main-size max-cross-occupied is-row)
-  "调整容器主轴和交叉轴尺寸（若 auto）。"
+  "调整容器主轴和交叉轴尺寸（若 auto）。参照 C# AdjustContainerMainSize / AdjustContainerCrossSize。"
   ;; 主轴方向
   (if is-row
       (when (vnode-element--auto-p (vnode-element-style-width container))
